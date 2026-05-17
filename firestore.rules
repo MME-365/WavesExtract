@@ -41,17 +41,21 @@ service cloud.firestore {
     }
 
     function isSuspended() {
-      // Use get() to check user document regardless of which collection is being accessed
-      return isSignedIn() && 
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isSuspended', false) == true;
+      // Check existing document if we're in the users collection, otherwise use get()
+      return isSignedIn() && (
+        (request.path[3] == 'users' && request.path[4] == request.auth.uid && 
+         resource != null && resource.data.get('isSuspended', false) == true) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isSuspended', false) == true
+      );
     }
 
     // --- User Profile Rules ---
     match /users/{userId} {
       function isValidUser(data) {
-        return data.keys().hasAll(['email', 'balance', 'isAdmin', 'isSuspended', 'profileCompleted', 'createdAt']) &&
+        let keys = ['email', 'balance', 'isAdmin', 'isSuspended', 'profileCompleted', 'createdAt'];
+        return data.keys().hasAll(keys) &&
                data.email is string &&
-               data.balance is number && data.balance >= 0 &&
+               data.balance is number &&
                data.isAdmin is bool &&
                data.isSuspended is bool &&
                data.profileCompleted is bool &&
@@ -59,35 +63,38 @@ service cloud.firestore {
                data.get('name', '') is string &&
                data.get('phone', '') is string &&
                (data.get('age', 0) == null || data.get('age', 0) is number) &&
-               data.get('gender', 'other') in ['male', 'female', 'other', 'prefer_not_to_say', null] &&
+               (data.get('gender', 'other') == null || data.get('gender', 'other') is string) &&
                data.get('country', '') is string &&
                data.get('walletAddress', '') is string &&
-               data.get('purpose', 'Investor') in ['Community Health', 'Token Owner', 'Airdrop Campaigns', 'Data Company', 'Government Agency', 'Investor', null];
+               (data.get('purpose', 'Investor') == null || data.get('purpose', 'Investor') is string);
       }
 
       allow get: if isOwner(userId) || isAdmin();
       allow list: if isAdmin();
       
       allow create: if isOwner(userId) && 
-                      incoming().balance == 0 && 
-                      incoming().isSuspended == false &&
-                      incoming().profileCompleted == false &&
-                      incoming().isAdmin == (incoming().email == 'customerservice.mme365@gmail.com') &&
+                      incoming().get('balance', 0) == 0 && 
+                      incoming().get('isSuspended', false) == false &&
+                      incoming().get('profileCompleted', false) == false &&
+                      incoming().get('isAdmin', false) == (incoming().email == 'customerservice.mme365@gmail.com') &&
                       isValidUser(incoming());
                       
-      allow update: if (isOwner(userId) && !isSuspended() &&
+      allow update: if (isOwner(userId) && 
+                        existing().get('isSuspended', false) == false &&
                         (
-                          // Regular profile update (no balance change)
+                          // Regular profile update
                           incoming().diff(existing()).affectedKeys().hasOnly(['email', 'name', 'phone', 'age', 'gender', 'country', 'purpose', 'updatedAt', 'isSuspended', 'walletAddress']) ||
                           // Balance deduction for usage
-                          (incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'updatedAt']) && incoming().balance < existing().balance) ||
-                          // Reward logic: Complete profile and get $2.50
+                          (incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'updatedAt']) && 
+                           incoming().get('balance', 0) <= existing().get('balance', 0) + 0.0001) ||
+                          // Reward logic
                           (incoming().diff(existing()).affectedKeys().hasOnly(['profileCompleted', 'balance', 'name', 'phone', 'age', 'gender', 'country', 'purpose', 'updatedAt', 'walletAddress']) &&
-                           existing().profileCompleted == false && 
-                           incoming().profileCompleted == true && 
-                           incoming().balance == existing().balance + 2.5)
+                           existing().get('profileCompleted', false) == false && 
+                           incoming().get('profileCompleted', false) == true && 
+                           incoming().get('balance', 0) >= existing().get('balance', 0) + 2.4)
                         ) && 
-                        incoming().isSuspended == existing().isSuspended && // Owner cannot unsuspend self
+                        incoming().get('isSuspended', false) == existing().get('isSuspended', false) &&
+                        incoming().get('isAdmin', false) == existing().get('isAdmin', false) &&
                         isValidUser(incoming())) ||
                      (isAdmin() && isValidUser(incoming()));
     }
@@ -99,7 +106,7 @@ service cloud.firestore {
                data.userId is string && isValidId(data.userId) &&
                data.userEmail is string &&
                data.amount is number && data.amount > 0 &&
-               data.currency in ['WAVES', 'BTC', 'ETH', 'SOL', 'USDT'] &&
+               data.currency in ['WAVES', 'BTC', 'ETH', 'SOL', 'USDT', 'BIOTECH'] &&
                data.proof is string && data.proof.size() <= 500 &&
                data.status in ['pending', 'approved', 'rejected'] &&
                data.createdAt is string;

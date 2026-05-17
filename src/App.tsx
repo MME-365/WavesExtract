@@ -174,6 +174,7 @@ export default function App() {
     isExtracting: false,
     error: null,
   });
+  const [lastScannedHeight, setLastScannedHeight] = useState<number | null>(null);
 
   const [addresses, setAddresses] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState(0);
@@ -245,6 +246,24 @@ export default function App() {
     const unsubscribe = onSnapshot(userRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data() as UserProfile;
+        
+        // Migration: Ensure all required fields for security rules are present
+        const requiredFields: (keyof UserProfile)[] = ['email', 'balance', 'isAdmin', 'isSuspended', 'profileCompleted', 'createdAt'];
+        const missingFields = requiredFields.filter(f => data[f] === undefined);
+        
+        if (missingFields.length > 0) {
+          console.log('Migrating user profile, adding missing fields:', missingFields);
+          const migrationData: any = {};
+          if (data.email === undefined) migrationData.email = user.email || '';
+          if (data.balance === undefined) migrationData.balance = 0;
+          if (data.isAdmin === undefined) migrationData.isAdmin = user.email === 'customerservice.mme365@gmail.com';
+          if (data.isSuspended === undefined) migrationData.isSuspended = false;
+          if (data.profileCompleted === undefined) migrationData.profileCompleted = false;
+          if (data.createdAt === undefined) migrationData.createdAt = new Date().toISOString();
+          
+          updateDoc(userRef, migrationData).catch(e => console.error('Migration failed:', e));
+        }
+
         setProfile(data);
         setProfileForm({
           name: data.name || '',
@@ -365,10 +384,14 @@ export default function App() {
       await signInWithPopup(auth, new GoogleAuthProvider());
     } catch (error: any) {
       if (error.code === 'auth/popup-closed-by-user') {
-        // Silent fail or low-priority toast
         console.log('Login attempt cancelled by user (popup closed).');
+      } else if (error.code === 'auth/unauthorized-domain') {
+        const msg = 'This domain is not authorized in Firebase. Please add this URL to "Authorized Domains" in your Firebase Authentication settings.';
+        setStats(prev => ({ ...prev, error: msg }));
+        alert(msg);
       } else {
         console.error('Login error:', error);
+        setStats(prev => ({ ...prev, error: 'Login failed: ' + (error.message || 'Unknown error') }));
       }
     }
   };
@@ -388,21 +411,28 @@ export default function App() {
         alert('Waves wallet linked successfully!');
       } else {
         // Sign in anonymously and set address
-        const anon = await signInAnonymously(auth);
-        const userRef = doc(db, 'users', anon.user.uid);
-        const snap = await getDoc(userRef);
-        if (!snap.exists()) {
-          await setDoc(userRef, {
-            email: 'anonymous@waves.' + address.slice(-8),
-            balance: 0,
-            isAdmin: false,
-            isSuspended: false,
-            profileCompleted: false,
-            walletAddress: address,
-            createdAt: new Date().toISOString()
-          });
-        } else {
-          await updateDoc(userRef, { walletAddress: address });
+        try {
+          const anon = await signInAnonymously(auth);
+          const userRef = doc(db, 'users', anon.user.uid);
+          const snap = await getDoc(userRef);
+          if (!snap.exists()) {
+            await setDoc(userRef, {
+              email: 'anonymous@waves.' + address.slice(-8),
+              balance: 0,
+              isAdmin: false,
+              isSuspended: false,
+              profileCompleted: false,
+              walletAddress: address,
+              createdAt: new Date().toISOString()
+            });
+          } else {
+            await updateDoc(userRef, { walletAddress: address });
+          }
+        } catch (anonErr: any) {
+          if (anonErr.code === 'auth/admin-restricted-operation') {
+            throw new Error('Anonymous authentication is disabled in Firebase Console. Please enable it under "Authentication" -> "Sign-in method".');
+          }
+          throw anonErr;
         }
       }
     } catch (e: any) {
@@ -436,7 +466,10 @@ export default function App() {
     extractionRef.current = true;
     setStats(prev => ({ ...prev, isExtracting: true, error: null }));
     
-    let height = stats.currentHeight;
+    let height = lastScannedHeight || stats.currentHeight;
+    // If we're starting fresh but have a current height, start from top
+    if (height === 0 && stats.currentHeight > 0) height = stats.currentHeight;
+    
     let foundAddresses = new Set(addresses);
     let processed = 0;
     let lastWriteCount = foundAddresses.size;
@@ -467,21 +500,56 @@ export default function App() {
           if (!extractionRef.current) break;
           if (block.transactions) {
             for (const tx of block.transactions) {
+              // Extract all possible addresses from the transaction
               if (tx.sender) foundAddresses.add(tx.sender);
-              if (tx.recipient) foundAddresses.add(tx.recipient);
-              if (tx.transfers) tx.transfers.forEach((t: any) => t.recipient && foundAddresses.add(t.recipient));
+              if (tx.recipient) {
+                // Handle both address strings and alias objects/strings
+                const recipient = typeof tx.recipient === 'string' ? tx.recipient : tx.recipient.address || tx.recipient.alias;
+                if (recipient && typeof recipient === 'string' && !recipient.startsWith('alias:')) {
+                   foundAddresses.add(recipient);
+                }
+              }
+              // Mass Transfer
+              if (tx.transfers) {
+                tx.transfers.forEach((t: any) => {
+                  if (t.recipient) {
+                    const r = typeof t.recipient === 'string' ? t.recipient : t.recipient.address || t.recipient.alias;
+                    if (r && typeof r === 'string' && !r.startsWith('alias:')) foundAddresses.add(r);
+                  }
+                });
+              }
+              // Invoke Script (caller)
+              if (tx.caller) foundAddresses.add(tx.caller);
+              // Lease
+              if (tx.leaseId && tx.recipient) {
+                 const r = typeof tx.recipient === 'string' ? tx.recipient : tx.recipient.address || tx.recipient.alias;
+                 if (r && typeof r === 'string' && !r.startsWith('alias:')) foundAddresses.add(r);
+              }
             }
           }
           processed++;
+          height--; // Update height block by block for accurate resuming
           
           // Deduct balance live in chunks if user has funds
           if (profile && profile.balance > 0 && foundAddresses.size - lastWriteCount >= 100) {
             const batchSize = foundAddresses.size - lastWriteCount;
             const cost = batchSize * PRICE_PER_ADDRESS;
-            await updateDoc(doc(db, 'users', user!.uid), {
-              balance: increment(-cost)
-            });
-            lastWriteCount = foundAddresses.size;
+            
+            // Ensure we don't go negative, violation of security rules
+            if (profile.balance < cost) {
+              setStats(prev => ({ ...prev, error: 'Insufficient balance to continue extraction.' }));
+              break;
+            }
+
+            try {
+              await updateDoc(doc(db, 'users', user!.uid), {
+                balance: increment(-cost),
+                updatedAt: new Date().toISOString()
+              });
+              lastWriteCount = foundAddresses.size;
+            } catch (err) {
+              handleFirestoreError(err, OperationType.UPDATE, `users/${user!.uid}`);
+            }
           }
 
           if (foundAddresses.size >= TARGET_ADDRESS_COUNT) break;
@@ -490,23 +558,32 @@ export default function App() {
           // Check suspension during sub-loop
           if (profile?.isSuspended) break;
         }
-        height -= BATCH_SIZE;
+        
+        setLastScannedHeight(height);
         setAddresses(new Set(foundAddresses));
         setStats(prev => ({ ...prev, addressesFound: foundAddresses.size, blocksProcessed: processed }));
         setProgress(Math.min(100, (foundAddresses.size / TARGET_ADDRESS_COUNT) * 100));
-        await new Promise(resolve => setTimeout(resolve, 100)); // Slightly more delay to be friendly to the UI/Node
+        await new Promise(resolve => setTimeout(resolve, 50)); 
       }
     } catch (err: any) {
       console.error('Extraction error:', err);
-      setStats(prev => ({ ...prev, error: 'Connection lost after multiple retries. Please resume when stable.' }));
+      // If it's our wrapped firestore error, it already contains the message
+      const errorMsg = err.message.startsWith('{') ? 'Database Error: Check connection or permissions.' : 'Connection lost: Please resume when stable.';
+      setStats(prev => ({ ...prev, error: errorMsg }));
     } finally {
       // Final balance sync for remaining addresses ONLY if user has balance
       if (profile && profile.balance > 0 && foundAddresses.size > lastWriteCount) {
         const remainingBatch = foundAddresses.size - lastWriteCount;
         const remainingCost = remainingBatch * PRICE_PER_ADDRESS;
-        await updateDoc(doc(db, 'users', user!.uid), {
-          balance: increment(-remainingCost)
-        }).catch(() => {});
+        
+        if (profile.balance >= remainingCost) {
+          await updateDoc(doc(db, 'users', user!.uid), {
+            balance: increment(-remainingCost),
+            updatedAt: new Date().toISOString()
+          }).catch((err) => {
+             console.warn('Final balance sync failed:', err);
+          });
+        }
       }
       
       extractionRef.current = false;
