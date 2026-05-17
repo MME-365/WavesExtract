@@ -386,7 +386,8 @@ export default function App() {
       if (error.code === 'auth/popup-closed-by-user') {
         console.log('Login attempt cancelled by user (popup closed).');
       } else if (error.code === 'auth/unauthorized-domain') {
-        const msg = 'This domain is not authorized in Firebase. Please add this URL to "Authorized Domains" in your Firebase Authentication settings.';
+        const domain = window.location.hostname;
+        const msg = `Domain "${domain}" is not authorized in Firebase. Please add "${domain}" to "Authorized Domains" in your Firebase Authentication settings under "Authentication" -> "Settings".`;
         setStats(prev => ({ ...prev, error: msg }));
         alert(msg);
       } else {
