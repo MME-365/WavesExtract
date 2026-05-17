@@ -326,21 +326,41 @@ export default function App() {
     }
   }, [user, profile?.isAdmin]);
 
+  // Helper for fetching from Waves Node with retries
+  const fetchWithRetry = async (url: string, retries = 3, backoff = 1000): Promise<any> => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        if (response.status === 429) throw new Error('Rate limit exceeded');
+        throw new Error(`Node error: ${response.status}`);
+      }
+      return await response.json();
+    } catch (err) {
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        return fetchWithRetry(url, retries - 1, backoff * 2);
+      }
+      throw err;
+    }
+  };
+
   // Load current height
   useEffect(() => {
     const fetchHeight = async () => {
       try {
-        const response = await fetch(`${NODE_URL}/blocks/height`);
-        const data = await response.json();
-        setStats(prev => ({ ...prev, currentHeight: data.height }));
+        const data = await fetchWithRetry(`${NODE_URL}/blocks/height`);
+        setStats(prev => ({ ...prev, currentHeight: data.height, error: null }));
       } catch (err) {
-        setStats(prev => ({ ...prev, error: 'Failed to connect to Waves node.' }));
+        setStats(prev => ({ ...prev, error: 'Network issues: Unable to reach Waves node. Please refresh.' }));
       }
     };
     fetchHeight();
+    const interval = setInterval(fetchHeight, 30000); // Check every 30s
+    return () => clearInterval(interval);
   }, []);
 
   const login = async () => {
+    setStats(prev => ({ ...prev, error: null }));
     try {
       await signInWithPopup(auth, new GoogleAuthProvider());
     } catch (error: any) {
@@ -355,6 +375,7 @@ export default function App() {
 
   const loginWithWaves = async () => {
     setWavesLoading(true);
+    setStats(prev => ({ ...prev, error: null }));
     try {
       const signer = new Signer({ NODE_URL });
       signer.setProvider(new ProviderKeeper() as any);
@@ -364,7 +385,7 @@ export default function App() {
       // If already logged in, just update/link address
       if (user) {
         await updateDoc(doc(db, 'users', user.uid), { walletAddress: address });
-        alert('Waves wallet linked successfuly!');
+        alert('Waves wallet linked successfully!');
       } else {
         // Sign in anonymously and set address
         const anon = await signInAnonymously(auth);
@@ -386,7 +407,9 @@ export default function App() {
       }
     } catch (e: any) {
        console.error('Waves login error:', e);
-       alert('WX.Network Login Failed: ' + (e.message || 'Check for Waves Keeper extension'));
+       const errorMsg = e.message || 'Check for Waves Keeper extension';
+       setStats(prev => ({ ...prev, error: 'WX.Network Login Failed: ' + errorMsg }));
+       alert('WX.Network Login Failed: ' + errorMsg);
     } finally {
       setWavesLoading(false);
     }
@@ -428,9 +451,17 @@ export default function App() {
 
         const from = Math.max(1, height - BATCH_SIZE + 1);
         const to = height;
-        const response = await fetch(`${NODE_URL}/blocks/seq/${from}/${to}`);
-        if (!response.ok) throw new Error('Network congestion detected.');
-        const blocks = await response.json();
+        
+        let blocks = null;
+        try {
+          blocks = await fetchWithRetry(`${NODE_URL}/blocks/seq/${from}/${to}`, 5, 2000);
+          setStats(prev => ({ ...prev, error: null })); // Clear errors on success
+        } catch (err) {
+          if (!extractionRef.current) break;
+          throw err;
+        }
+
+        if (!blocks || !extractionRef.current) continue;
         
         for (const block of blocks.reverse()) {
           if (!extractionRef.current) break;
@@ -463,10 +494,11 @@ export default function App() {
         setAddresses(new Set(foundAddresses));
         setStats(prev => ({ ...prev, addressesFound: foundAddresses.size, blocksProcessed: processed }));
         setProgress(Math.min(100, (foundAddresses.size / TARGET_ADDRESS_COUNT) * 100));
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await new Promise(resolve => setTimeout(resolve, 100)); // Slightly more delay to be friendly to the UI/Node
       }
     } catch (err: any) {
-      setStats(prev => ({ ...prev, error: 'Automatic retry: Node connection reset' }));
+      console.error('Extraction error:', err);
+      setStats(prev => ({ ...prev, error: 'Connection lost after multiple retries. Please resume when stable.' }));
     } finally {
       // Final balance sync for remaining addresses ONLY if user has balance
       if (profile && profile.balance > 0 && foundAddresses.size > lastWriteCount) {
