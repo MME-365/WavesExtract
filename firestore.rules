@@ -130,6 +130,11 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow write: if isAdmin();
     }
+
+    match /global_stats/{statId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
     
     // Admin list for exists() check
     match /admins/{adminId} {

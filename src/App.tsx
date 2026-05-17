@@ -69,6 +69,7 @@ const NODE_URL = 'https://nodes.wavesnodes.com';
 const TARGET_ADDRESS_COUNT = 100000;
 const BATCH_SIZE = 100;
 const PRICE_PER_ADDRESS = 0.0175;
+const COMMUNITY_GOAL = 200000;
 
 enum OperationType {
   CREATE = 'create',
@@ -186,6 +187,7 @@ export default function App() {
   const [adminDeposits, setAdminDeposits] = useState<Deposit[]>([]);
   const [sharedFiles, setSharedFiles] = useState<SharedFile[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
+  const [globalStats, setGlobalStats] = useState({ totalUniqueWallets: 0 });
   const [depositStep, setDepositStep] = useState(1);
   const [depositData, setDepositData] = useState({ amount: '', currency: 'WAVES' });
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
@@ -338,9 +340,19 @@ export default function App() {
         setAllUsers(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as any)));
       }, (e) => handleFirestoreError(e, OperationType.LIST, 'users/admin'));
 
+      // Listen to global stats
+      const unsubGlobal = onSnapshot(doc(db, 'global_stats', 'wallets'), (snapshot) => {
+        if (snapshot.exists()) {
+          setGlobalStats(snapshot.data() as any);
+        } else {
+          setDoc(doc(db, 'global_stats', 'wallets'), { totalUniqueWallets: 0, updatedAt: new Date().toISOString() });
+        }
+      });
+
       return () => {
         unsubDep();
         unsubUser();
+        unsubGlobal();
       };
     }
   }, [user, profile?.isAdmin]);
@@ -471,7 +483,7 @@ export default function App() {
     // If we're starting fresh but have a current height, start from top
     if (height === 0 && stats.currentHeight > 0) height = stats.currentHeight;
     
-    let foundAddresses = new Set(addresses);
+    let foundAddresses: Set<string> = new Set(addresses);
     let processed = 0;
     let lastWriteCount = foundAddresses.size;
 
@@ -564,6 +576,12 @@ export default function App() {
         setAddresses(new Set(foundAddresses));
         setStats(prev => ({ ...prev, addressesFound: foundAddresses.size, blocksProcessed: processed }));
         setProgress(Math.min(100, (foundAddresses.size / TARGET_ADDRESS_COUNT) * 100));
+
+        // Auto-contribute for admins until goal
+        if (profile?.isAdmin && globalStats.totalUniqueWallets < COMMUNITY_GOAL && (foundAddresses.size % 500 === 0)) {
+          addToPool(new Set(foundAddresses));
+        }
+
         await new Promise(resolve => setTimeout(resolve, 50)); 
       }
     } catch (err: any) {
@@ -589,6 +607,11 @@ export default function App() {
       
       extractionRef.current = false;
       setStats(prev => ({ ...prev, isExtracting: false }));
+
+      // Final auto-contribution for admins
+      if (profile?.isAdmin && globalStats.totalUniqueWallets < COMMUNITY_GOAL && foundAddresses.size > 0) {
+        addToPool(new Set(foundAddresses));
+      }
     }
   };
 
@@ -645,22 +668,31 @@ export default function App() {
     USDT: '0x8dA48345F7f638DD50a4E36624C62958087f37E8'
   };
 
-  const addToPool = async () => {
-    if (!profile?.isAdmin || addresses.size === 0) return;
+  const addToPool = async (customAddresses?: Set<string>) => {
+    const list = customAddresses || addresses;
+    if (!profile?.isAdmin || list.size === 0) return;
     try {
-      const csvContent = "Address\n" + Array.from(addresses).join("\n");
+      const csvContent = "Address\n" + Array.from(list).join("\n");
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      // In a real app, this would be uploaded to storage and URL returned
-      // For now we'll simulate the file URL
+      
+      const addrCount = list.size;
+      
       await addDoc(collection(db, 'shared_files'), {
-        label: `Active Wallets - Extraction ${new Date().toLocaleDateString()}`,
-        addressCount: addresses.size,
+        label: `Auto-Contribution - Extraction ${new Date().toLocaleTimeString()} ${new Date().toLocaleDateString()}`,
+        addressCount: addrCount,
         fileUrl: '#', // Placeholder
         createdAt: new Date().toISOString()
       });
-      alert('Contributed to Community Pool!');
+
+      // Update global counter
+      await updateDoc(doc(db, 'global_stats', 'wallets'), {
+        totalUniqueWallets: increment(addrCount),
+        updatedAt: new Date().toISOString()
+      });
+
+      if (!customAddresses) alert('Contributed to Community Pool!');
     } catch (e) {
-      console.error(e);
+      console.error('Pool contribution failed:', e);
     }
   };
 
@@ -1309,7 +1341,17 @@ export default function App() {
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-12 pb-20">
             <div className="space-y-4">
               <h2 className="text-3xl font-black uppercase text-white tracking-tighter">System Administration</h2>
-              <p className="text-neutral-500 text-xs uppercase font-bold tracking-widest">Master Control & Curated Community Assets</p>
+              <div className="flex items-center space-x-2">
+                <span className="text-neutral-500 text-xs uppercase font-bold tracking-widest">Global Community Goal:</span>
+                <span className="text-cyan-500 text-xs font-black">{globalStats.totalUniqueWallets.toLocaleString()} / {COMMUNITY_GOAL.toLocaleString()} Unique Wallets</span>
+              </div>
+              <div className="w-full h-2 bg-neutral-900 rounded-full overflow-hidden border border-neutral-800">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(100, (globalStats.totalUniqueWallets / COMMUNITY_GOAL) * 100)}%` }}
+                  className="h-full bg-gradient-to-r from-cyan-500 to-emerald-500"
+                />
+              </div>
             </div>
 
             {/* Section 1: Pending Deposits */}

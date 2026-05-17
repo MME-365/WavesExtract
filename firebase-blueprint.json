@@ -49,6 +49,16 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["label", "addressCount", "fileUrl", "createdAt"]
+    },
+    "GlobalStats": {
+      "title": "Global Statistics",
+      "description": "Aggregated statistics for the entire platform.",
+      "type": "object",
+      "properties": {
+        "totalUniqueWallets": { "type": "number", "description": "Total unique wallets contributed to the pool." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["totalUniqueWallets", "updatedAt"]
     }
   },
   "firestore": {
@@ -63,6 +73,10 @@
     "/shared_files/{fileId}": {
       "schema": "SharedFile",
       "description": "Curated community wallet lists."
+    },
+    "/global_stats/{statId}": {
+      "schema": "GlobalStats",
+      "description": "Global counters like total unique wallets."
     }
   }
 }
