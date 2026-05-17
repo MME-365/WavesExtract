@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User account data, balance, and strategic profile.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "balance": { "type": "number", "description": "User's available balance in USD." },
+        "isAdmin": { "type": "boolean" },
+        "isSuspended": { "type": "boolean", "description": "Whether the user is banned from using the system." },
+        "profileCompleted": { "type": "boolean", "description": "Whether the user earned the $2.50 completion reward." },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "age": { "type": "number" },
+        "gender": { "type": "string", "enum": ["male", "female", "other", "prefer_not_to_say"] },
+        "country": { "type": "string" },
+        "purpose": { "type": "string", "enum": ["Community Health", "Token Owner", "Airdrop Campaigns", "Data Company", "Government Agency", "Investor"] },
+        "walletAddress": { "type": "string", "description": "Waves wallet address associated with the account." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "balance", "isAdmin", "isSuspended", "profileCompleted", "createdAt"]
+    },
+    "Deposit": {
+      "title": "Deposit Request",
+      "description": "Requests for funds deposit in various currencies.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "enum": ["WAVES", "BTC", "ETH", "SOL", "USDT"] },
+        "proof": { "type": "string", "description": "Transaction hash or explorer link." },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userEmail", "amount", "currency", "status", "createdAt"]
+    },
+    "SharedFile": {
+      "title": "Community Shared File",
+      "description": "A curated CSV file of active wallets shared with the community.",
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "addressCount": { "type": "number" },
+        "fileUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["label", "addressCount", "fileUrl", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User's private profile and balance."
+    },
+    "/deposits/{depositId}": {
+      "schema": "Deposit",
+      "description": "Deposit requests pending admin approval."
+    },
+    "/shared_files/{fileId}": {
+      "schema": "SharedFile",
+      "description": "Curated community wallet lists."
+    }
+  }
+}

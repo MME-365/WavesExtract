@@ -1,0 +1,6 @@
+{
+  "name": "Waves Address Extractor",
+  "description": "Extract 100,000 wallet addresses from the Waves blockchain and export to CSV.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

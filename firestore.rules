@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function emailVerified() {
+      return isSignedIn() && 
+             (request.auth.token.get('email_verified', false) == true || 
+              request.auth.token.get('firebase', {}).get('sign_in_provider', '') == 'google.com');
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'customerservice.mme365@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSuspended() {
+      // Use get() to check user document regardless of which collection is being accessed
+      return isSignedIn() && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isSuspended', false) == true;
+    }
+
+    // --- User Profile Rules ---
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.keys().hasAll(['email', 'balance', 'isAdmin', 'isSuspended', 'profileCompleted', 'createdAt']) &&
+               data.email is string &&
+               data.balance is number && data.balance >= 0 &&
+               data.isAdmin is bool &&
+               data.isSuspended is bool &&
+               data.profileCompleted is bool &&
+               data.createdAt is string &&
+               data.get('name', '') is string &&
+               data.get('phone', '') is string &&
+               (data.get('age', 0) == null || data.get('age', 0) is number) &&
+               data.get('gender', 'other') in ['male', 'female', 'other', 'prefer_not_to_say', null] &&
+               data.get('country', '') is string &&
+               data.get('walletAddress', '') is string &&
+               data.get('purpose', 'Investor') in ['Community Health', 'Token Owner', 'Airdrop Campaigns', 'Data Company', 'Government Agency', 'Investor', null];
+      }
+
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      
+      allow create: if isOwner(userId) && 
+                      incoming().balance == 0 && 
+                      incoming().isSuspended == false &&
+                      incoming().profileCompleted == false &&
+                      incoming().isAdmin == (incoming().email == 'customerservice.mme365@gmail.com') &&
+                      isValidUser(incoming());
+                      
+      allow update: if (isOwner(userId) && !isSuspended() &&
+                        (
+                          // Regular profile update (no balance change)
+                          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'name', 'phone', 'age', 'gender', 'country', 'purpose', 'updatedAt', 'isSuspended', 'walletAddress']) ||
+                          // Balance deduction for usage
+                          (incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'updatedAt']) && incoming().balance < existing().balance) ||
+                          // Reward logic: Complete profile and get $2.50
+                          (incoming().diff(existing()).affectedKeys().hasOnly(['profileCompleted', 'balance', 'name', 'phone', 'age', 'gender', 'country', 'purpose', 'updatedAt', 'walletAddress']) &&
+                           existing().profileCompleted == false && 
+                           incoming().profileCompleted == true && 
+                           incoming().balance == existing().balance + 2.5)
+                        ) && 
+                        incoming().isSuspended == existing().isSuspended && // Owner cannot unsuspend self
+                        isValidUser(incoming())) ||
+                     (isAdmin() && isValidUser(incoming()));
+    }
+
+    // --- Deposit Rules ---
+    match /deposits/{depositId} {
+      function isValidDeposit(data) {
+        return data.keys().hasAll(['userId', 'userEmail', 'amount', 'currency', 'proof', 'status', 'createdAt']) &&
+               data.userId is string && isValidId(data.userId) &&
+               data.userEmail is string &&
+               data.amount is number && data.amount > 0 &&
+               data.currency in ['WAVES', 'BTC', 'ETH', 'SOL', 'USDT'] &&
+               data.proof is string && data.proof.size() <= 500 &&
+               data.status in ['pending', 'approved', 'rejected'] &&
+               data.createdAt is string;
+      }
+
+      allow get: if isSignedIn() && (isOwner(existing().userId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      
+      allow create: if isSignedIn() && !isSuspended() && 
+                      isOwner(incoming().userId) &&
+                      incoming().status == 'pending' &&
+                      isValidDeposit(incoming());
+                      
+      allow update: if isAdmin() && isValidDeposit(incoming());
+      
+      allow delete: if isAdmin();
+    }
+
+    // --- Shared Files Rules ---
+    match /shared_files/{fileId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    
+    // Admin list for exists() check
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+    }
+  }
+}
