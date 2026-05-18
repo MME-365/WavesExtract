@@ -486,10 +486,11 @@ export default function App() {
     let foundAddresses: Set<string> = new Set(addresses);
     let processed = 0;
     let lastWriteCount = foundAddresses.size;
+    let lastAutoDownloadCount = foundAddresses.size;
 
     try {
       while (extractionRef.current && foundAddresses.size < TARGET_ADDRESS_COUNT && height > 1) {
-        // Preview/Balance enforcement
+        // ... (existing preview/balance checks)
         if (profile && profile.balance <= 0 && foundAddresses.size >= PREVIEW_LIMIT) {
           setStats(prev => ({ ...prev, error: 'Preview limit reached. Upgrade to continue extraction.' }));
           break;
@@ -501,7 +502,7 @@ export default function App() {
         let blocks = null;
         try {
           blocks = await fetchWithRetry(`${NODE_URL}/blocks/seq/${from}/${to}`, 5, 2000);
-          setStats(prev => ({ ...prev, error: null })); // Clear errors on success
+          setStats(prev => ({ ...prev, error: null })); 
         } catch (err) {
           if (!extractionRef.current) break;
           throw err;
@@ -513,16 +514,13 @@ export default function App() {
           if (!extractionRef.current) break;
           if (block.transactions) {
             for (const tx of block.transactions) {
-              // Extract all possible addresses from the transaction
               if (tx.sender) foundAddresses.add(tx.sender);
               if (tx.recipient) {
-                // Handle both address strings and alias objects/strings
                 const recipient = typeof tx.recipient === 'string' ? tx.recipient : tx.recipient.address || tx.recipient.alias;
                 if (recipient && typeof recipient === 'string' && !recipient.startsWith('alias:')) {
                    foundAddresses.add(recipient);
                 }
               }
-              // Mass Transfer
               if (tx.transfers) {
                 tx.transfers.forEach((t: any) => {
                   if (t.recipient) {
@@ -531,9 +529,7 @@ export default function App() {
                   }
                 });
               }
-              // Invoke Script (caller)
               if (tx.caller) foundAddresses.add(tx.caller);
-              // Lease
               if (tx.leaseId && tx.recipient) {
                  const r = typeof tx.recipient === 'string' ? tx.recipient : tx.recipient.address || tx.recipient.alias;
                  if (r && typeof r === 'string' && !r.startsWith('alias:')) foundAddresses.add(r);
@@ -541,19 +537,15 @@ export default function App() {
             }
           }
           processed++;
-          height--; // Update height block by block for accurate resuming
-          
-          // Deduct balance live in chunks if user has funds
+          height--; 
+
           if (profile && profile.balance > 0 && foundAddresses.size - lastWriteCount >= 100) {
             const batchSize = foundAddresses.size - lastWriteCount;
             const cost = batchSize * PRICE_PER_ADDRESS;
-            
-            // Ensure we don't go negative, violation of security rules
             if (profile.balance < cost) {
               setStats(prev => ({ ...prev, error: 'Insufficient balance to continue extraction.' }));
               break;
             }
-
             try {
               await updateDoc(doc(db, 'users', user!.uid), {
                 balance: increment(-cost),
@@ -566,9 +558,7 @@ export default function App() {
           }
 
           if (foundAddresses.size >= TARGET_ADDRESS_COUNT) break;
-          // Check preview limit during sub-loop
           if (profile && profile.balance <= 0 && foundAddresses.size >= PREVIEW_LIMIT) break;
-          // Check suspension during sub-loop
           if (profile?.isSuspended) break;
         }
         
@@ -576,6 +566,24 @@ export default function App() {
         setAddresses(new Set(foundAddresses));
         setStats(prev => ({ ...prev, addressesFound: foundAddresses.size, blocksProcessed: processed }));
         setProgress(Math.min(100, (foundAddresses.size / TARGET_ADDRESS_COUNT) * 100));
+
+        // Auto-download every 5000 addresses
+        if (Math.floor(foundAddresses.size / 5000) > Math.floor(lastAutoDownloadCount / 5000)) {
+          const batchIndex = Math.floor(foundAddresses.size / 5000);
+          const allArr = Array.from(foundAddresses);
+          const batch = allArr.slice(lastAutoDownloadCount, foundAddresses.size);
+          
+          if (batch.length > 0) {
+            const csvContent = "Address\n" + batch.join("\n");
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `waves_batch_${batchIndex}_${batch.length}.csv`;
+            link.click();
+            lastAutoDownloadCount = foundAddresses.size;
+          }
+        }
 
         // Auto-contribute for admins until goal
         if (profile?.isAdmin && globalStats.totalUniqueWallets < COMMUNITY_GOAL && (foundAddresses.size % 500 === 0)) {
@@ -924,7 +932,7 @@ export default function App() {
                 <div className="bg-black/50 border border-neutral-800 p-8 md:p-12 rounded-[2rem] text-center space-y-4 shadow-inner">
                   <div className="space-y-1">
                     <p className="text-[10px] text-cyan-500 font-bold uppercase tracking-[0.3em]">Estimated Ecosystem Value</p>
-                    <div className="text-6xl md:text-8xl font-black text-white tracking-tighter tabular-nums">
+                    <div className="text-4xl md:text-6xl font-black text-white tracking-tighter tabular-nums">
                       ${(calcWallets * 25).toLocaleString()}
                     </div>
                   </div>
