@@ -190,7 +190,14 @@ export default function App() {
   const [globalStats, setGlobalStats] = useState({ totalUniqueWallets: 0 });
   const [depositStep, setDepositStep] = useState(1);
   const [depositData, setDepositData] = useState({ amount: '', currency: 'WAVES' });
-  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({
+    WAVES: 1.5,
+    BIOTECH: 1.5,
+    BTC: 65000,
+    ETH: 3500,
+    SOL: 150,
+    USDT: 1.0
+  });
 
   // Profile Form State
   const [profileForm, setProfileForm] = useState({
@@ -207,18 +214,22 @@ export default function App() {
   useEffect(() => {
     const fetchPrices = async () => {
       try {
-        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=waves,bitcoin,ethereum,solana,tether,biotechtokens&vs_currencies=usd');
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=waves,bitcoin,ethereum,solana,tether&vs_currencies=usd');
+        if (!res.ok) return;
         const data = await res.json();
-        setLivePrices({
-          WAVES: data.waves.usd,
-          BIOTECH: data.biotechtokens?.usd || data.waves.usd, // Fallback to waves if not found
-          BTC: data.bitcoin.usd,
-          ETH: data.ethereum.usd,
-          SOL: data.solana.usd,
-          USDT: data.tether.usd
-        });
+        if (data && typeof data === 'object') {
+          setLivePrices(prev => ({
+            ...prev,
+            WAVES: data.waves?.usd ?? prev.WAVES ?? 1.5,
+            BIOTECH: data.waves?.usd ?? prev.BIOTECH ?? 1.5,
+            BTC: data.bitcoin?.usd ?? prev.BTC ?? 65000,
+            ETH: data.ethereum?.usd ?? prev.ETH ?? 3500,
+            SOL: data.solana?.usd ?? prev.SOL ?? 150,
+            USDT: data.tether?.usd ?? prev.USDT ?? 1.0
+          }));
+        }
       } catch (e) {
-        console.error('Failed to fetch live prices', e);
+        console.warn('Live price fetch warning (using default/cached prices):', e);
       }
     };
     fetchPrices();
@@ -487,10 +498,11 @@ export default function App() {
     let processed = 0;
     let lastWriteCount = foundAddresses.size;
     let lastAutoDownloadCount = foundAddresses.size;
+    let lastAutoPoolCount = foundAddresses.size;
 
     try {
       while (extractionRef.current && foundAddresses.size < TARGET_ADDRESS_COUNT && height > 1) {
-        // ... (existing preview/balance checks)
+        // Preview/Balance enforcement
         if (profile && profile.balance <= 0 && foundAddresses.size >= PREVIEW_LIMIT) {
           setStats(prev => ({ ...prev, error: 'Preview limit reached. Upgrade to continue extraction.' }));
           break;
@@ -585,9 +597,14 @@ export default function App() {
           }
         }
 
-        // Auto-contribute for admins until goal
-        if (profile?.isAdmin && globalStats.totalUniqueWallets < COMMUNITY_GOAL && (foundAddresses.size % 500 === 0)) {
-          addToPool(new Set(foundAddresses));
+        // Auto-contribute incremental batches until goal
+        if (foundAddresses.size - lastAutoPoolCount >= 500 && globalStats.totalUniqueWallets < COMMUNITY_GOAL) {
+          const allArr = Array.from(foundAddresses);
+          const batch = new Set(allArr.slice(lastAutoPoolCount, foundAddresses.size));
+          if (batch.size > 0) {
+            addToPool(batch);
+            lastAutoPoolCount = foundAddresses.size;
+          }
         }
 
         await new Promise(resolve => setTimeout(resolve, 50)); 
@@ -616,9 +633,14 @@ export default function App() {
       extractionRef.current = false;
       setStats(prev => ({ ...prev, isExtracting: false }));
 
-      // Final auto-contribution for admins
-      if (profile?.isAdmin && globalStats.totalUniqueWallets < COMMUNITY_GOAL && foundAddresses.size > 0) {
-        addToPool(new Set(foundAddresses));
+      // Final auto-contribution for remaining addresses
+      if (foundAddresses.size > lastAutoPoolCount && globalStats.totalUniqueWallets < COMMUNITY_GOAL) {
+        const allArr = Array.from(foundAddresses);
+        const batch = new Set(allArr.slice(lastAutoPoolCount, foundAddresses.size));
+        if (batch.size > 0) {
+          addToPool(batch);
+          lastAutoPoolCount = foundAddresses.size;
+        }
       }
     }
   };
@@ -676,13 +698,10 @@ export default function App() {
     USDT: '0x8dA48345F7f638DD50a4E36624C62958087f37E8'
   };
 
-  const addToPool = async (customAddresses?: Set<string>) => {
-    const list = customAddresses || addresses;
-    if (!profile?.isAdmin || list.size === 0) return;
+  const addToPool = async (customAddresses?: Set<string> | unknown) => {
+    const list = (customAddresses instanceof Set) ? customAddresses : addresses;
+    if (!user || !list || !(list instanceof Set) || list.size === 0) return;
     try {
-      const csvContent = "Address\n" + Array.from(list).join("\n");
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      
       const addrCount = list.size;
       
       await addDoc(collection(db, 'shared_files'), {
@@ -693,12 +712,14 @@ export default function App() {
       });
 
       // Update global counter
-      await updateDoc(doc(db, 'global_stats', 'wallets'), {
+      await setDoc(doc(db, 'global_stats', 'wallets'), {
         totalUniqueWallets: increment(addrCount),
         updatedAt: new Date().toISOString()
-      });
+      }, { merge: true });
 
-      if (!customAddresses) alert('Contributed to Community Pool!');
+      if (!(customAddresses instanceof Set)) {
+        alert('Contributed to Community Pool!');
+      }
     } catch (e) {
       console.error('Pool contribution failed:', e);
     }
@@ -1430,7 +1451,7 @@ export default function App() {
                         <FileJson className="w-5 h-5 text-cyan-500" />
                         <div>
                           <div className="text-xs font-black uppercase text-white truncate max-w-[150px]">{file.label}</div>
-                          <div className="text-[9px] text-neutral-500">{file.addressCount.toLocaleString()} Wallets</div>
+                          <div className="text-[9px] text-neutral-500">{(file.addressCount || 0).toLocaleString()} Wallets</div>
                         </div>
                       </div>
                       <button className="p-2 hover:bg-neutral-700 rounded-lg"><Download className="w-4 h-4 text-neutral-400" /></button>
@@ -1440,7 +1461,7 @@ export default function App() {
                 </div>
 
                 <div className="pt-4">
-                  <button onClick={addToPool} disabled={addresses.size === 0} className="w-full bg-emerald-500 text-black font-black uppercase tracking-widest py-4 rounded-xl flex items-center justify-center space-x-3 hover:bg-emerald-400 transition-colors disabled:opacity-30">
+                  <button onClick={() => addToPool()} disabled={addresses.size === 0} className="w-full bg-emerald-500 text-black font-black uppercase tracking-widest py-4 rounded-xl flex items-center justify-center space-x-3 hover:bg-emerald-400 transition-colors disabled:opacity-30">
                     <Plus className="w-5 h-5" />
                     <span>Contribute Current Extraction to Pool</span>
                   </button>

@@ -128,12 +128,13 @@ service cloud.firestore {
     // --- Shared Files Rules ---
     match /shared_files/{fileId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
     }
 
     match /global_stats/{statId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isSignedIn();
     }
     
     // Admin list for exists() check
