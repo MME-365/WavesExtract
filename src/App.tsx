@@ -34,7 +34,12 @@ import {
   ArrowRight,
   Clipboard,
   QrCode,
-  ChevronLeft
+  ChevronLeft,
+  Menu,
+  X,
+  ChevronDown,
+  Sparkles,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -166,6 +171,8 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'landing' | 'main' | 'deposits' | 'admin' | 'assets'>('landing');
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [calcWallets, setCalcWallets] = useState(1000);
   
   const [stats, setStats] = useState<Stats>({
@@ -182,6 +189,8 @@ export default function App() {
   const extractionRef = useRef<boolean>(false);
   const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
   const [isSuspendedModalOpen, setIsSuspendedModalOpen] = useState(false);
+  const [isWavesModalOpen, setIsWavesModalOpen] = useState(false);
+  const [manualWalletAddress, setManualWalletAddress] = useState('');
   const [wavesLoading, setWavesLoading] = useState(false);
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [adminDeposits, setAdminDeposits] = useState<Deposit[]>([]);
@@ -401,6 +410,27 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Close navigation menu on outside click or escape
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMenuOpen]);
+
   const login = async () => {
     setStats(prev => ({ ...prev, error: null }));
     try {
@@ -420,7 +450,69 @@ export default function App() {
     }
   };
 
+  const connectWalletWithAddress = async (addr: string) => {
+    const trimmed = addr.trim();
+    if (!trimmed) {
+      setStats(prev => ({ ...prev, error: 'Please enter a valid Waves wallet address.' }));
+      return;
+    }
+    // Basic Waves address validation: starts with 3P, 3M, 3N or ~35 chars
+    if (trimmed.length < 25) {
+      setStats(prev => ({ ...prev, error: 'Invalid Waves address length.' }));
+      return;
+    }
+
+    setWavesLoading(true);
+    setStats(prev => ({ ...prev, error: null }));
+    try {
+      if (user) {
+        await updateDoc(doc(db, 'users', user.uid), { walletAddress: trimmed });
+        setProfileForm(prev => ({ ...prev, walletAddress: trimmed }));
+        setIsWavesModalOpen(false);
+      } else {
+        try {
+          const anon = await signInAnonymously(auth);
+          const userRef = doc(db, 'users', anon.user.uid);
+          const snap = await getDoc(userRef);
+          if (!snap.exists()) {
+            await setDoc(userRef, {
+              email: 'anonymous@waves.' + trimmed.slice(-8),
+              balance: 0,
+              isAdmin: false,
+              isSuspended: false,
+              profileCompleted: false,
+              walletAddress: trimmed,
+              createdAt: new Date().toISOString()
+            });
+          } else {
+            await updateDoc(userRef, { walletAddress: trimmed });
+          }
+          setIsWavesModalOpen(false);
+        } catch (anonErr: any) {
+          if (anonErr.code === 'auth/admin-restricted-operation') {
+            throw new Error('Anonymous authentication is disabled in Firebase. Please sign in with Google or enable Anonymous in Firebase.');
+          }
+          throw anonErr;
+        }
+      }
+    } catch (err: any) {
+      console.error('Wallet link error:', err);
+      setStats(prev => ({ ...prev, error: err.message || 'Failed to link Waves wallet' }));
+    } finally {
+      setWavesLoading(false);
+    }
+  };
+
   const loginWithWaves = async () => {
+    // Check if WavesKeeper extension is installed in the browser window
+    const isKeeperAvailable = typeof window !== 'undefined' && Boolean((window as any).WavesKeeper);
+
+    if (!isKeeperAvailable) {
+      // Rather than throwing unhandled Signer internal error 1004, open friendly Waves modal
+      setIsWavesModalOpen(true);
+      return;
+    }
+
     setWavesLoading(true);
     setStats(prev => ({ ...prev, error: null }));
     try {
@@ -429,12 +521,10 @@ export default function App() {
       const wavesUser = await signer.login();
       const address = wavesUser.address;
 
-      // If already logged in, just update/link address
       if (user) {
         await updateDoc(doc(db, 'users', user.uid), { walletAddress: address });
-        alert('Waves wallet linked successfully!');
+        setProfileForm(prev => ({ ...prev, walletAddress: address }));
       } else {
-        // Sign in anonymously and set address
         try {
           const anon = await signInAnonymously(auth);
           const userRef = doc(db, 'users', anon.user.uid);
@@ -454,16 +544,15 @@ export default function App() {
           }
         } catch (anonErr: any) {
           if (anonErr.code === 'auth/admin-restricted-operation') {
-            throw new Error('Anonymous authentication is disabled in Firebase Console. Please enable it under "Authentication" -> "Sign-in method".');
+            throw new Error('Anonymous authentication is disabled in Firebase Console. Please sign in with Google first.');
           }
           throw anonErr;
         }
       }
     } catch (e: any) {
-       console.error('Waves login error:', e);
-       const errorMsg = e.message || 'Check for Waves Keeper extension';
-       setStats(prev => ({ ...prev, error: 'WX.Network Login Failed: ' + errorMsg }));
-       alert('WX.Network Login Failed: ' + errorMsg);
+      console.warn('Waves login notice:', e);
+      // If Keeper was missing or failed during login attempt, show helper modal
+      setIsWavesModalOpen(true);
     } finally {
       setWavesLoading(false);
     }
@@ -814,53 +903,293 @@ export default function App() {
       <div className="max-w-4xl w-full space-y-8">
         
         {/* Navigation Bar */}
-        <div className="flex items-center justify-between bg-neutral-900/50 p-2 rounded-2xl border border-neutral-800/50 backdrop-blur-xl sticky top-4 z-50">
-          <div className="flex items-center space-x-2 px-4 cursor-pointer" onClick={() => setActiveTab('landing')}>
-            <div className="w-8 h-8 bg-cyan-500 rounded-lg flex items-center justify-center font-black text-black text-xs shadow-[0_0_15px_rgba(6,182,212,0.4)]">W</div>
-            <span className="font-bold text-sm hidden sm:inline">WAVES<span className="text-cyan-500">EXTRACT</span></span>
-          </div>
-          <div className="flex space-x-1">
-            <NavBtn active={activeTab === 'landing'} onClick={() => setActiveTab('landing')} icon={<ShieldCheck className="w-4 h-4" />} label="Home" />
-            {user && (
-              <>
-                <NavBtn active={activeTab === 'main'} onClick={() => setActiveTab('main')} icon={<Activity className="w-4 h-4" />} label="Scanner" />
-                <NavBtn active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} icon={<User className="w-4 h-4" />} label="Profile" />
-                <NavBtn active={activeTab === 'deposits'} onClick={() => setActiveTab('deposits')} icon={<Wallet className="w-4 h-4" />} label="Wallet" />
-                <NavBtn active={activeTab === 'assets'} onClick={() => setActiveTab('assets')} icon={<Megaphone className="w-4 h-4" />} label="Media" />
-                {profile?.isAdmin && <NavBtn active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<Crown className="w-4 h-4" />} label="Admin" />}
-              </>
-            )}
-          </div>
-          {user ? (
+        <div ref={menuRef} className="relative z-50">
+          <div className="flex items-center justify-between bg-neutral-900/70 p-2.5 rounded-2xl border border-neutral-800/80 backdrop-blur-xl sticky top-4 shadow-2xl">
             <div className="flex items-center space-x-3">
-              {profile?.walletAddress && (
-                <div className="hidden lg:flex items-center space-x-2 bg-black/40 px-3 py-1.5 rounded-xl border border-white/5">
-                  <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                  <span className="text-[9px] text-neutral-500 font-bold uppercase truncate max-w-[80px]">
-                    {profile.walletAddress}
+              {/* Top Navigation Menu Trigger Button */}
+              <button 
+                onClick={() => setIsMenuOpen(prev => !prev)}
+                className={`flex items-center space-x-2 px-3 py-2 rounded-xl text-xs font-black transition-all border ${
+                  isMenuOpen 
+                    ? 'bg-cyan-500 text-black border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.35)]' 
+                    : 'bg-neutral-800/90 text-white border-neutral-700/80 hover:bg-neutral-700 hover:border-neutral-600'
+                }`}
+                title="Open Navigation Menu"
+                aria-label="Navigation Menu"
+                aria-expanded={isMenuOpen}
+              >
+                {isMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4 text-cyan-400" />}
+                <span className="tracking-wider uppercase text-[11px]">Menu</span>
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isMenuOpen ? 'rotate-180 text-black' : 'text-neutral-400'}`} />
+              </button>
+
+              <div 
+                className="flex items-center space-x-2 px-2 cursor-pointer group" 
+                onClick={() => { setActiveTab('landing'); setIsMenuOpen(false); }}
+              >
+                <div className="w-8 h-8 bg-cyan-500 rounded-lg flex items-center justify-center font-black text-black text-xs shadow-[0_0_15px_rgba(6,182,212,0.4)] group-hover:scale-105 transition-transform">
+                  W
+                </div>
+                <div className="flex flex-col">
+                  <span className="font-bold text-sm tracking-tight leading-none">
+                    WAVES<span className="text-cyan-400">EXTRACT</span>
+                  </span>
+                  <span className="text-[9px] text-neutral-400 font-bold uppercase tracking-widest mt-0.5">
+                    {activeTab === 'landing' ? 'Home' : activeTab === 'main' ? 'Scanner' : activeTab === 'profile' ? 'Profile' : activeTab === 'deposits' ? 'Wallet' : activeTab === 'assets' ? 'Media' : 'Admin'}
                   </span>
                 </div>
-              )}
-              <button onClick={logout} className="p-2 hover:bg-neutral-800 text-neutral-500 hover:text-red-500 rounded-lg transition-colors">
-                <LogOut className="w-5 h-5" />
-              </button>
+              </div>
             </div>
-          ) : (
-            <div className="flex space-x-2">
-               <button 
-                onClick={loginWithWaves}
-                disabled={wavesLoading}
-                className="flex items-center space-x-2 bg-neutral-800 text-white px-3 py-2 rounded-xl text-[10px] font-black hover:bg-neutral-700 transition-all border border-neutral-700 disabled:opacity-50"
+
+            {/* Quick Desktop Current Tab Badge */}
+            <div className="hidden md:flex items-center space-x-2 text-[11px] text-neutral-400 font-bold uppercase bg-neutral-950/60 px-3 py-1.5 rounded-xl border border-neutral-800/60">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+              <span>Viewing: <strong className="text-white">{activeTab.toUpperCase()}</strong></span>
+            </div>
+
+            {/* Auth / Profile Area */}
+            {user ? (
+              <div className="flex items-center space-x-2">
+                {profile?.walletAddress && (
+                  <div className="hidden sm:flex items-center space-x-2 bg-black/40 px-3 py-1.5 rounded-xl border border-white/5">
+                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                    <span className="text-[9px] text-neutral-400 font-bold uppercase truncate max-w-[90px]" title={profile.walletAddress}>
+                      {profile.walletAddress}
+                    </span>
+                  </div>
+                )}
+                <div className="hidden sm:flex items-center space-x-1.5 bg-cyan-500/10 border border-cyan-500/20 px-2.5 py-1 rounded-lg">
+                  <Wallet className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-[10px] font-black text-cyan-300">
+                    ${profile?.balance?.toFixed(2) || '0.00'}
+                  </span>
+                </div>
+                <button 
+                  onClick={logout} 
+                  title="Sign Out"
+                  className="p-2 hover:bg-red-500/10 text-neutral-400 hover:text-red-400 border border-transparent hover:border-red-500/20 rounded-xl transition-all"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-2">
+                <button 
+                  onClick={loginWithWaves}
+                  disabled={wavesLoading}
+                  className="flex items-center space-x-1.5 bg-neutral-800/90 hover:bg-neutral-700 text-white px-3 py-2 rounded-xl text-[10px] font-black transition-all border border-neutral-700 disabled:opacity-50"
+                >
+                  {wavesLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" /> : <Box className="w-3.5 h-3.5 text-cyan-400" />}
+                  <span className="hidden sm:inline tracking-wider">WX.NETWORK</span>
+                </button>
+                <button 
+                  onClick={login} 
+                  className="flex items-center space-x-1.5 bg-white text-black px-3.5 py-2 rounded-xl text-[10px] font-black hover:bg-cyan-400 transition-all shadow-md active:scale-95"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span className="tracking-wider">GOOGLE</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Top Navigation Menu Dropdown / Panel */}
+          <AnimatePresence>
+            {isMenuOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -12, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -12, scale: 0.98 }}
+                transition={{ duration: 0.16, ease: 'easeOut' }}
+                className="absolute top-full left-0 right-0 mt-2 bg-neutral-900/95 border border-neutral-800/90 rounded-3xl p-4 shadow-[0_20px_60px_rgba(0,0,0,0.8)] backdrop-blur-2xl z-50 overflow-hidden"
               >
-                {wavesLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Box className="w-4 h-4 text-cyan-500" />}
-                <span className="hidden sm:inline">WX.NETWORK</span>
-              </button>
-              <button onClick={login} className="flex items-center space-x-2 bg-white text-black px-4 py-2 rounded-xl text-[10px] font-black hover:bg-neutral-200 transition-all shadow-lg active:scale-95">
-                <LogIn className="w-4 h-4" />
-                <span>GOOGLE</span>
-              </button>
-            </div>
-          )}
+                <div className="flex items-center justify-between pb-3 mb-3 border-b border-neutral-800/80 px-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Navigation Hub</span>
+                    <span className="text-[9px] bg-cyan-500/10 text-cyan-400 font-bold px-2 py-0.5 rounded-full border border-cyan-500/20">
+                      Waves v2.4
+                    </span>
+                  </div>
+                  <button 
+                    onClick={() => setIsMenuOpen(false)}
+                    className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  {/* Home Tab */}
+                  <button
+                    onClick={() => { setActiveTab('landing'); setIsMenuOpen(false); }}
+                    className={`flex items-start space-x-3 p-3.5 rounded-2xl text-left transition-all border ${
+                      activeTab === 'landing'
+                        ? 'bg-cyan-500/15 border-cyan-500/50 text-white shadow-lg shadow-cyan-500/5'
+                        : 'bg-neutral-950/60 border-neutral-800/80 hover:bg-neutral-800 hover:border-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    <div className={`p-2.5 rounded-xl ${activeTab === 'landing' ? 'bg-cyan-500 text-black' : 'bg-neutral-800 text-cyan-400'}`}>
+                      <ShieldCheck className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black uppercase tracking-wider">Home & Overview</span>
+                        {activeTab === 'landing' && <span className="text-[9px] font-black text-cyan-400 uppercase">Active</span>}
+                      </div>
+                      <p className="text-[10px] text-neutral-500 font-medium line-clamp-1 mt-0.5">Platform metrics, ROI calculator & methodology</p>
+                    </div>
+                  </button>
+
+                  {/* Scanner Tab */}
+                  <button
+                    onClick={() => {
+                      if (!user) { login(); return; }
+                      setActiveTab('main');
+                      setIsMenuOpen(false);
+                    }}
+                    className={`flex items-start space-x-3 p-3.5 rounded-2xl text-left transition-all border ${
+                      activeTab === 'main'
+                        ? 'bg-cyan-500/15 border-cyan-500/50 text-white shadow-lg shadow-cyan-500/5'
+                        : 'bg-neutral-950/60 border-neutral-800/80 hover:bg-neutral-800 hover:border-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    <div className={`p-2.5 rounded-xl ${activeTab === 'main' ? 'bg-cyan-500 text-black' : 'bg-neutral-800 text-emerald-400'}`}>
+                      <Activity className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black uppercase tracking-wider">Scanner Engine</span>
+                        {activeTab === 'main' && <span className="text-[9px] font-black text-cyan-400 uppercase">Active</span>}
+                      </div>
+                      <p className="text-[10px] text-neutral-500 font-medium line-clamp-1 mt-0.5">Live block sequence wallet extraction</p>
+                    </div>
+                  </button>
+
+                  {/* Profile Tab */}
+                  <button
+                    onClick={() => {
+                      if (!user) { login(); return; }
+                      setActiveTab('profile');
+                      setIsMenuOpen(false);
+                    }}
+                    className={`flex items-start space-x-3 p-3.5 rounded-2xl text-left transition-all border ${
+                      activeTab === 'profile'
+                        ? 'bg-cyan-500/15 border-cyan-500/50 text-white shadow-lg shadow-cyan-500/5'
+                        : 'bg-neutral-950/60 border-neutral-800/80 hover:bg-neutral-800 hover:border-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    <div className={`p-2.5 rounded-xl ${activeTab === 'profile' ? 'bg-cyan-500 text-black' : 'bg-neutral-800 text-purple-400'}`}>
+                      <User className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black uppercase tracking-wider">Strategic Profile</span>
+                        {!profile?.profileCompleted && <span className="text-[9px] font-black text-emerald-400 uppercase">+$2.50</span>}
+                      </div>
+                      <p className="text-[10px] text-neutral-500 font-medium line-clamp-1 mt-0.5">Identity, Waves wallet sync & reward</p>
+                    </div>
+                  </button>
+
+                  {/* Deposits / Wallet Tab */}
+                  <button
+                    onClick={() => {
+                      if (!user) { login(); return; }
+                      setActiveTab('deposits');
+                      setIsMenuOpen(false);
+                    }}
+                    className={`flex items-start space-x-3 p-3.5 rounded-2xl text-left transition-all border ${
+                      activeTab === 'deposits'
+                        ? 'bg-cyan-500/15 border-cyan-500/50 text-white shadow-lg shadow-cyan-500/5'
+                        : 'bg-neutral-950/60 border-neutral-800/80 hover:bg-neutral-800 hover:border-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    <div className={`p-2.5 rounded-xl ${activeTab === 'deposits' ? 'bg-cyan-500 text-black' : 'bg-neutral-800 text-amber-400'}`}>
+                      <Wallet className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black uppercase tracking-wider">Wallet & Deposits</span>
+                        {activeTab === 'deposits' && <span className="text-[9px] font-black text-cyan-400 uppercase">Active</span>}
+                      </div>
+                      <p className="text-[10px] text-neutral-500 font-medium line-clamp-1 mt-0.5">Manage balances, proofs and credits</p>
+                    </div>
+                  </button>
+
+                  {/* Media / Assets Tab */}
+                  <button
+                    onClick={() => {
+                      if (!user) { login(); return; }
+                      setActiveTab('assets');
+                      setIsMenuOpen(false);
+                    }}
+                    className={`flex items-start space-x-3 p-3.5 rounded-2xl text-left transition-all border ${
+                      activeTab === 'assets'
+                        ? 'bg-cyan-500/15 border-cyan-500/50 text-white shadow-lg shadow-cyan-500/5'
+                        : 'bg-neutral-950/60 border-neutral-800/80 hover:bg-neutral-800 hover:border-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    <div className={`p-2.5 rounded-xl ${activeTab === 'assets' ? 'bg-cyan-500 text-black' : 'bg-neutral-800 text-pink-400'}`}>
+                      <Megaphone className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black uppercase tracking-wider">Promotional Media</span>
+                        {activeTab === 'assets' && <span className="text-[9px] font-black text-cyan-400 uppercase">Active</span>}
+                      </div>
+                      <p className="text-[10px] text-neutral-500 font-medium line-clamp-1 mt-0.5">Custom promo banners & airdrop assets</p>
+                    </div>
+                  </button>
+
+                  {/* Admin Tab (if admin) */}
+                  {profile?.isAdmin && (
+                    <button
+                      onClick={() => {
+                        setActiveTab('admin');
+                        setIsMenuOpen(false);
+                      }}
+                      className={`flex items-start space-x-3 p-3.5 rounded-2xl text-left transition-all border ${
+                        activeTab === 'admin'
+                          ? 'bg-cyan-500/15 border-cyan-500/50 text-white shadow-lg shadow-cyan-500/5'
+                          : 'bg-neutral-950/60 border-neutral-800/80 hover:bg-neutral-800 hover:border-neutral-700 text-neutral-300'
+                      }`}
+                    >
+                      <div className={`p-2.5 rounded-xl ${activeTab === 'admin' ? 'bg-cyan-500 text-black' : 'bg-neutral-800 text-yellow-400'}`}>
+                        <Crown className="w-5 h-5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black uppercase tracking-wider">Admin Console</span>
+                          <span className="text-[9px] font-black text-yellow-400 uppercase">Master</span>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 font-medium line-clamp-1 mt-0.5">Manage node suspensions & user records</p>
+                      </div>
+                    </button>
+                  )}
+                </div>
+
+                {/* Footer bar inside menu */}
+                <div className="mt-4 pt-3 border-t border-neutral-800/80 flex flex-wrap items-center justify-between gap-3 px-2">
+                  <div className="flex items-center space-x-3 text-[10px] text-neutral-400">
+                    <span>Block Height: <strong className="text-cyan-400">{stats.currentHeight ? stats.currentHeight.toLocaleString() : 'Connecting...'}</strong></span>
+                    <span>•</span>
+                    <span>Fee: <strong className="text-white">${PRICE_PER_ADDRESS}</strong> / addr</span>
+                  </div>
+                  {user && (
+                    <button
+                      onClick={() => {
+                        setIsDepositModalOpen(true);
+                        setIsMenuOpen(false);
+                      }}
+                      className="flex items-center space-x-1.5 bg-cyan-500 text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase hover:bg-cyan-400 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Deposit Funds</span>
+                    </button>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {activeTab === 'landing' && (
@@ -1633,6 +1962,120 @@ export default function App() {
                 <button onClick={() => setIsSuspendedModalOpen(false)} className="w-full bg-neutral-800 text-white py-4 rounded-xl font-black uppercase tracking-widest hover:bg-neutral-700 transition-colors">
                   Close Notice
                 </button>
+              </motion.div>
+            </>
+          )}
+          {isWavesModalOpen && (
+            <>
+              <motion.div 
+                initial={{ opacity: 0 }} 
+                animate={{ opacity: 1 }} 
+                exit={{ opacity: 0 }} 
+                onClick={() => setIsWavesModalOpen(false)}
+                className="fixed inset-0 bg-black/80 backdrop-blur-md z-[110]"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: 20 }} 
+                animate={{ opacity: 1, scale: 1, y: 0 }} 
+                exit={{ opacity: 0, scale: 0.9, y: 20 }} 
+                className="fixed inset-0 m-auto w-full max-w-md h-fit max-h-[90vh] overflow-y-auto bg-neutral-900 border border-neutral-800 p-6 md:p-8 rounded-[2rem] shadow-2xl z-[120] space-y-6"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">
+                      <Box className="w-5 h-5 text-cyan-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-black uppercase text-white tracking-tight">Connect Waves Wallet</h3>
+                      <p className="text-[10px] text-neutral-400 uppercase font-bold tracking-wider">WX.Network & Keeper Integration</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setIsWavesModalOpen(false)} 
+                    className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="bg-neutral-950/80 border border-neutral-800/80 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center space-x-2 text-[11px] font-black uppercase text-cyan-400">
+                    <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>Keeper Extension Not Detected</span>
+                  </div>
+                  <p className="text-xs text-neutral-400 leading-relaxed">
+                    Browser extensions like <strong>Waves Keeper</strong> cannot be automatically injected inside sandboxed previews. You can connect your wallet instantly using either option below:
+                  </p>
+                </div>
+
+                {/* Option A: Enter address directly */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">
+                      Option 1: Paste Your Waves Address
+                    </label>
+                  </div>
+                  <div className="space-y-2">
+                    <input 
+                      type="text"
+                      value={manualWalletAddress}
+                      onChange={(e) => setManualWalletAddress(e.target.value)}
+                      placeholder="e.g. 3P... (Waves mainnet address)"
+                      className="w-full bg-black border border-neutral-800 rounded-xl px-4 py-3 text-xs font-mono text-white placeholder-neutral-600 focus:border-cyan-500 outline-none transition-all"
+                    />
+                    <button
+                      onClick={() => connectWalletWithAddress(manualWalletAddress)}
+                      disabled={wavesLoading || !manualWalletAddress.trim()}
+                      className="w-full bg-cyan-500 hover:bg-cyan-400 text-black py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-40 flex items-center justify-center space-x-2 shadow-lg shadow-cyan-500/10"
+                    >
+                      {wavesLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                      <span>Save & Link Wallet Address</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-neutral-800"></div>
+                  <span className="flex-shrink mx-3 text-[10px] font-black uppercase tracking-widest text-neutral-500">Or</span>
+                  <div className="flex-grow border-t border-neutral-800"></div>
+                </div>
+
+                {/* Option B: Install extension / external link */}
+                <div className="space-y-2">
+                  <span className="text-[10px] font-black text-neutral-400 uppercase tracking-widest block">
+                    Option 2: Browser Extension / Sign in
+                  </span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <a 
+                      href="https://wx.network/" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center space-x-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-3 py-2.5 rounded-xl text-[10px] font-black uppercase transition-colors border border-neutral-700/80"
+                    >
+                      <span>WX.Network</span>
+                      <ExternalLink className="w-3.5 h-3.5 text-neutral-400" />
+                    </a>
+                    {!user ? (
+                      <button 
+                        onClick={() => {
+                          setIsWavesModalOpen(false);
+                          login();
+                        }}
+                        className="flex items-center justify-center space-x-2 bg-white text-black px-3 py-2.5 rounded-xl text-[10px] font-black uppercase hover:bg-neutral-200 transition-colors"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Sign In</span>
+                      </button>
+                    ) : (
+                      <button 
+                        onClick={() => setIsWavesModalOpen(false)}
+                        className="flex items-center justify-center space-x-2 bg-neutral-800 text-neutral-300 hover:text-white px-3 py-2.5 rounded-xl text-[10px] font-black uppercase hover:bg-neutral-700 transition-colors"
+                      >
+                        <span>Close</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
               </motion.div>
             </>
           )}
