@@ -39,7 +39,11 @@ import {
   X,
   ChevronDown,
   Sparkles,
-  ExternalLink
+  ExternalLink,
+  Search,
+  Eye,
+  Filter,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -164,6 +168,7 @@ interface SharedFile {
   addressCount: number;
   fileUrl: string;
   createdAt: string;
+  addresses?: string[];
 }
 
 export default function App() {
@@ -195,6 +200,9 @@ export default function App() {
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [adminDeposits, setAdminDeposits] = useState<Deposit[]>([]);
   const [sharedFiles, setSharedFiles] = useState<SharedFile[]>([]);
+  const [selectedAdminFile, setSelectedAdminFile] = useState<SharedFile | null>(null);
+  const [adminSearchQuery, setAdminSearchQuery] = useState('');
+  const [adminPage, setAdminPage] = useState(1);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [globalStats, setGlobalStats] = useState({ totalUniqueWallets: 0 });
   const [depositStep, setDepositStep] = useState(1);
@@ -793,10 +801,12 @@ export default function App() {
     try {
       const addrCount = list.size;
       
+      const addrArr = Array.from(list);
       await addDoc(collection(db, 'shared_files'), {
         label: `Auto-Contribution - Extraction ${new Date().toLocaleTimeString()} ${new Date().toLocaleDateString()}`,
         addressCount: addrCount,
-        fileUrl: '#', // Placeholder
+        addresses: addrArr,
+        fileUrl: '#',
         createdAt: new Date().toISOString()
       });
 
@@ -831,6 +841,45 @@ export default function App() {
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `deposits/${depId}`);
     }
+  };
+
+  const downloadSharedFileCSV = (file: SharedFile) => {
+    const list = file.addresses && file.addresses.length > 0 ? file.addresses : [];
+    if (list.length === 0) {
+      alert('This batch has no stored address rows.');
+      return;
+    }
+    const csvContent = "Address\n" + list.join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${file.label.replace(/[^a-zA-Z0-9_-]/g, '_')}_${list.length}.csv`;
+    link.click();
+  };
+
+  const exportCombinedPoolCSV = () => {
+    const combinedSet = new Set<string>();
+    sharedFiles.forEach(f => {
+      if (f.addresses && Array.isArray(f.addresses)) {
+        f.addresses.forEach(a => combinedSet.add(a));
+      }
+    });
+    // Also include currently extracted addresses if in memory
+    addresses.forEach(a => combinedSet.add(a));
+
+    if (combinedSet.size === 0) {
+      alert('No addresses currently registered in the community pool batches.');
+      return;
+    }
+
+    const csvContent = "Address\n" + Array.from(combinedSet).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `waves_community_master_pool_${combinedSet.size}_wallets.csv`;
+    link.click();
   };
 
   const completeProfile = async () => {
@@ -905,92 +954,38 @@ export default function App() {
         {/* Navigation Bar */}
         <div ref={menuRef} className="relative z-50">
           <div className="flex items-center justify-between bg-neutral-900/70 p-2.5 rounded-2xl border border-neutral-800/80 backdrop-blur-xl sticky top-4 shadow-2xl">
-            <div className="flex items-center space-x-3">
-              {/* Top Navigation Menu Trigger Button */}
-              <button 
-                onClick={() => setIsMenuOpen(prev => !prev)}
-                className={`flex items-center space-x-2 px-3 py-2 rounded-xl text-xs font-black transition-all border ${
-                  isMenuOpen 
-                    ? 'bg-cyan-500 text-black border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.35)]' 
-                    : 'bg-neutral-800/90 text-white border-neutral-700/80 hover:bg-neutral-700 hover:border-neutral-600'
-                }`}
-                title="Open Navigation Menu"
-                aria-label="Navigation Menu"
-                aria-expanded={isMenuOpen}
-              >
-                {isMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4 text-cyan-400" />}
-                <span className="tracking-wider uppercase text-[11px]">Menu</span>
-                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isMenuOpen ? 'rotate-180 text-black' : 'text-neutral-400'}`} />
-              </button>
-
-              <div 
-                className="flex items-center space-x-2 px-2 cursor-pointer group" 
-                onClick={() => { setActiveTab('landing'); setIsMenuOpen(false); }}
-              >
-                <div className="w-8 h-8 bg-cyan-500 rounded-lg flex items-center justify-center font-black text-black text-xs shadow-[0_0_15px_rgba(6,182,212,0.4)] group-hover:scale-105 transition-transform">
-                  W
-                </div>
-                <div className="flex flex-col">
-                  <span className="font-bold text-sm tracking-tight leading-none">
-                    WAVES<span className="text-cyan-400">EXTRACT</span>
-                  </span>
-                  <span className="text-[9px] text-neutral-400 font-bold uppercase tracking-widest mt-0.5">
-                    {activeTab === 'landing' ? 'Home' : activeTab === 'main' ? 'Scanner' : activeTab === 'profile' ? 'Profile' : activeTab === 'deposits' ? 'Wallet' : activeTab === 'assets' ? 'Media' : 'Admin'}
-                  </span>
-                </div>
+            {/* Branding & Custom Brand Emblem */}
+            <div 
+              className="flex items-center space-x-2.5 px-2 cursor-pointer group" 
+              onClick={() => { setActiveTab('landing'); setIsMenuOpen(false); }}
+            >
+              <BrandLogo className="w-8 h-8 group-hover:scale-105 transition-transform" />
+              <div className="flex flex-col">
+                <span className="font-bold text-sm tracking-tight leading-none">
+                  WAVES<span className="text-cyan-400">EXTRACT</span>
+                </span>
+                <span className="text-[9px] text-neutral-400 font-bold uppercase tracking-widest mt-0.5">
+                  {activeTab === 'landing' ? 'Home' : activeTab === 'main' ? 'Scanner' : activeTab === 'profile' ? 'Profile' : activeTab === 'deposits' ? 'Wallet' : activeTab === 'assets' ? 'Media' : 'Admin'}
+                </span>
               </div>
             </div>
 
-            {/* Quick Desktop Current Tab Badge */}
-            <div className="hidden md:flex items-center space-x-2 text-[11px] text-neutral-400 font-bold uppercase bg-neutral-950/60 px-3 py-1.5 rounded-xl border border-neutral-800/60">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-              <span>Viewing: <strong className="text-white">{activeTab.toUpperCase()}</strong></span>
-            </div>
-
-            {/* Auth / Profile Area */}
-            {user ? (
-              <div className="flex items-center space-x-2">
-                {profile?.walletAddress && (
-                  <div className="hidden sm:flex items-center space-x-2 bg-black/40 px-3 py-1.5 rounded-xl border border-white/5">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                    <span className="text-[9px] text-neutral-400 font-bold uppercase truncate max-w-[90px]" title={profile.walletAddress}>
-                      {profile.walletAddress}
-                    </span>
-                  </div>
-                )}
-                <div className="hidden sm:flex items-center space-x-1.5 bg-cyan-500/10 border border-cyan-500/20 px-2.5 py-1 rounded-lg">
-                  <Wallet className="w-3.5 h-3.5 text-cyan-400" />
-                  <span className="text-[10px] font-black text-cyan-300">
-                    ${profile?.balance?.toFixed(2) || '0.00'}
-                  </span>
-                </div>
-                <button 
-                  onClick={logout} 
-                  title="Sign Out"
-                  className="p-2 hover:bg-red-500/10 text-neutral-400 hover:text-red-400 border border-transparent hover:border-red-500/20 rounded-xl transition-all"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center space-x-2">
-                <button 
-                  onClick={loginWithWaves}
-                  disabled={wavesLoading}
-                  className="flex items-center space-x-1.5 bg-neutral-800/90 hover:bg-neutral-700 text-white px-3 py-2 rounded-xl text-[10px] font-black transition-all border border-neutral-700 disabled:opacity-50"
-                >
-                  {wavesLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" /> : <Box className="w-3.5 h-3.5 text-cyan-400" />}
-                  <span className="hidden sm:inline tracking-wider">WX.NETWORK</span>
-                </button>
-                <button 
-                  onClick={login} 
-                  className="flex items-center space-x-1.5 bg-white text-black px-3.5 py-2 rounded-xl text-[10px] font-black hover:bg-cyan-400 transition-all shadow-md active:scale-95"
-                >
-                  <LogIn className="w-3.5 h-3.5" />
-                  <span className="tracking-wider">GOOGLE</span>
-                </button>
-              </div>
-            )}
+            {/* Top Navigation Menu Trigger Button */}
+            <button 
+              onClick={() => setIsMenuOpen(prev => !prev)}
+              className={`flex items-center space-x-2 px-3 py-2 rounded-xl text-xs font-black transition-all border ${
+                isMenuOpen 
+                  ? 'bg-cyan-500 text-black border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.35)]' 
+                  : 'bg-neutral-800/90 text-white border-neutral-700/80 hover:bg-neutral-700 hover:border-neutral-600'
+              }`}
+              title="Open Navigation Menu"
+              aria-label="Navigation Menu"
+              aria-expanded={isMenuOpen}
+            >
+              {isMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4 text-cyan-400" />}
+              <span className="tracking-wider uppercase text-[11px]">Menu</span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isMenuOpen ? 'rotate-180 text-black' : 'text-neutral-400'}`} />
+            </button>
           </div>
 
           {/* Top Navigation Menu Dropdown / Panel */}
@@ -1016,6 +1011,62 @@ export default function App() {
                   >
                     <X className="w-4 h-4" />
                   </button>
+                </div>
+
+                {/* Account / Google Login Block inside Menu */}
+                <div className="mb-4 bg-neutral-950/80 border border-neutral-800/80 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3">
+                  {user ? (
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center font-black text-cyan-400 text-xs">
+                          {user.email ? user.email.slice(0, 2).toUpperCase() : 'W'}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-black uppercase tracking-tight text-white truncate max-w-[200px]">
+                            {user.email || 'Authenticated User'}
+                          </div>
+                          <div className="flex items-center space-x-2 text-[10px] text-neutral-400 mt-0.5">
+                            <span>Balance: <strong className="text-cyan-400">${profile?.balance?.toFixed(2) || '0.00'}</strong></span>
+                            {profile?.walletAddress && (
+                              <>
+                                <span>•</span>
+                                <span className="truncate max-w-[120px] font-mono text-[9px] text-emerald-400" title={profile.walletAddress}>
+                                  {profile.walletAddress}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          logout();
+                          setIsMenuOpen(false);
+                        }} 
+                        className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/20 text-[10px] font-black uppercase transition-all"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        <span>Sign Out</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between w-full">
+                      <div>
+                        <div className="text-xs font-black uppercase tracking-tight text-white">Guest Access</div>
+                        <div className="text-[10px] text-neutral-400">Sign in to unlock full scanner and saved extractions</div>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          login();
+                          setIsMenuOpen(false);
+                        }}
+                        className="flex items-center space-x-2 bg-white hover:bg-cyan-400 text-black px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-md active:scale-95"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Google Sign In</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
@@ -1756,45 +1807,110 @@ export default function App() {
               </div>
             </div>
 
-            {/* Section 2: Community Pool Management */}
+            {/* Section 2: Community Pool Management & 200k Master Pool */}
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center space-x-2">
                   <Database className="w-5 h-5 text-emerald-500" />
-                  <h3 className="font-black uppercase text-sm tracking-widest">Community Wallet Library</h3>
+                  <h3 className="font-black uppercase text-sm tracking-widest text-white">Community 200,000 Wallet Pool Library</h3>
                 </div>
-                <div className="text-[10px] text-neutral-500 font-bold uppercase tracking-widest">
-                  Progress: {sharedFiles.length} / 100 Files
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={exportCombinedPoolCSV}
+                    className="flex items-center space-x-2 bg-cyan-500 hover:bg-cyan-400 text-black px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-lg shadow-cyan-500/10 active:scale-95"
+                    title="Export all unique wallets collected across all pool batches into a single master CSV"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Export Master Pool (CSV)</span>
+                  </button>
                 </div>
               </div>
               
-              <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-2xl space-y-4">
-                <p className="text-xs text-neutral-400 leading-relaxed uppercase font-bold tracking-wider">
-                  This curated library is private to administrators. Use user extractions to populate the global data foundation for the <span className="text-cyan-500">Waves Ecosystem</span>.
-                </p>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {sharedFiles.map(file => (
-                    <div key={file.id} className="bg-neutral-800/50 border border-neutral-700 p-4 rounded-xl flex items-center justify-between group">
-                      <div className="flex items-center space-x-3">
-                        <FileJson className="w-5 h-5 text-cyan-500" />
-                        <div>
-                          <div className="text-xs font-black uppercase text-white truncate max-w-[150px]">{file.label}</div>
-                          <div className="text-[9px] text-neutral-500">{(file.addressCount || 0).toLocaleString()} Wallets</div>
-                        </div>
-                      </div>
-                      <button className="p-2 hover:bg-neutral-700 rounded-lg"><Download className="w-4 h-4 text-neutral-400" /></button>
-                    </div>
-                  ))}
-                  {sharedFiles.length === 0 && <div className="md:col-span-2 text-center p-8 text-neutral-600 text-xs font-bold uppercase tracking-widest border border-dashed border-neutral-800 rounded-xl">Pool Empty</div>}
+              <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-2xl space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-neutral-950/70 border border-neutral-800/80 p-4 rounded-xl">
+                    <span className="text-[10px] uppercase font-black text-neutral-400 tracking-widest block">Total Batches Stored</span>
+                    <span className="text-xl font-black text-white">{sharedFiles.length} Batches</span>
+                  </div>
+                  <div className="bg-neutral-950/70 border border-neutral-800/80 p-4 rounded-xl">
+                    <span className="text-[10px] uppercase font-black text-neutral-400 tracking-widest block">Target Goal Capacity</span>
+                    <span className="text-xl font-black text-emerald-400">{COMMUNITY_GOAL.toLocaleString()} Wallets</span>
+                  </div>
+                  <div className="bg-neutral-950/70 border border-neutral-800/80 p-4 rounded-xl">
+                    <span className="text-[10px] uppercase font-black text-neutral-400 tracking-widest block">Accumulated Master Pool</span>
+                    <span className="text-xl font-black text-cyan-400">{globalStats.totalUniqueWallets.toLocaleString()} Wallets</span>
+                  </div>
                 </div>
 
-                <div className="pt-4">
-                  <button onClick={() => addToPool()} disabled={addresses.size === 0} className="w-full bg-emerald-500 text-black font-black uppercase tracking-widest py-4 rounded-xl flex items-center justify-center space-x-3 hover:bg-emerald-400 transition-colors disabled:opacity-30">
-                    <Plus className="w-5 h-5" />
-                    <span>Contribute Current Extraction to Pool</span>
+                <p className="text-xs text-neutral-400 leading-relaxed font-medium">
+                  This curated library stores decentralized wallet extractions. Administrators can inspect individual batches, search through addresses, or download the consolidated master CSV for airdrops and ecosystem distributions.
+                </p>
+                
+                {/* Batch Cards Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {sharedFiles.map(file => (
+                    <div key={file.id} className="bg-neutral-800/50 border border-neutral-700/80 p-4 rounded-xl flex items-center justify-between group hover:border-cyan-500/40 transition-all">
+                      <div className="flex items-center space-x-3 min-w-0">
+                        <div className="p-2.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                          <FileJson className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-black uppercase text-white truncate max-w-[180px] sm:max-w-[220px]" title={file.label}>
+                            {file.label}
+                          </div>
+                          <div className="text-[10px] text-neutral-400 font-bold flex items-center space-x-2 mt-0.5">
+                            <span className="text-cyan-400">{(file.addressCount || 0).toLocaleString()} Wallets</span>
+                            <span>•</span>
+                            <span>{new Date(file.createdAt).toLocaleDateString()}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-1.5 shrink-0 ml-2">
+                        <button 
+                          onClick={() => {
+                            setSelectedAdminFile(file);
+                            setAdminSearchQuery('');
+                            setAdminPage(1);
+                          }}
+                          className="px-2.5 py-1.5 bg-neutral-700/60 hover:bg-cyan-500 hover:text-black rounded-lg text-[10px] font-black uppercase text-neutral-300 transition-colors flex items-center space-x-1"
+                          title="View address list"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Inspect</span>
+                        </button>
+                        <button 
+                          onClick={() => downloadSharedFileCSV(file)}
+                          className="p-2 hover:bg-neutral-700 rounded-lg text-neutral-400 hover:text-white transition-colors"
+                          title="Download batch CSV"
+                        >
+                          <Download className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {sharedFiles.length === 0 && (
+                    <div className="md:col-span-2 text-center p-8 text-neutral-500 text-xs font-bold uppercase tracking-widest border border-dashed border-neutral-800 rounded-xl">
+                      Pool Empty — Run extraction or contribute batches below.
+                    </div>
+                  )}
+                </div>
+
+                <div className="pt-2 flex flex-col sm:flex-row gap-3">
+                  <button 
+                    onClick={() => addToPool()} 
+                    disabled={addresses.size === 0} 
+                    className="flex-1 bg-emerald-500 text-black font-black uppercase tracking-widest py-3.5 px-4 rounded-xl flex items-center justify-center space-x-2 hover:bg-emerald-400 transition-colors disabled:opacity-30"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Contribute Active Scanner ({addresses.size.toLocaleString()}) To Pool</span>
                   </button>
-                  <p className="text-[9px] text-center mt-2 text-neutral-600 uppercase font-bold tracking-tighter">Current Scanning Group Size: {addresses.size.toLocaleString()} Wallets</p>
+                  <button 
+                    onClick={exportCombinedPoolCSV} 
+                    className="bg-neutral-800 hover:bg-neutral-700 text-white font-black uppercase tracking-widest py-3.5 px-6 rounded-xl flex items-center justify-center space-x-2 transition-colors border border-neutral-700"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download All 200k Master Records</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1998,24 +2114,22 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="bg-neutral-950/80 border border-neutral-800/80 rounded-2xl p-4 space-y-3">
+                <div className="bg-neutral-950/80 border border-neutral-800/80 rounded-2xl p-4 space-y-2">
                   <div className="flex items-center space-x-2 text-[11px] font-black uppercase text-cyan-400">
-                    <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0" />
-                    <span>Keeper Extension Not Detected</span>
+                    <Box className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>Waves Wallet Address</span>
                   </div>
                   <p className="text-xs text-neutral-400 leading-relaxed">
-                    Browser extensions like <strong>Waves Keeper</strong> cannot be automatically injected inside sandboxed previews. You can connect your wallet instantly using either option below:
+                    Enter your Waves mainnet address below to associate your account with your wallet.
                   </p>
                 </div>
 
-                {/* Option A: Enter address directly */}
+                {/* Direct address entry only */}
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">
-                      Option 1: Paste Your Waves Address
-                    </label>
-                  </div>
-                  <div className="space-y-2">
+                  <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest block">
+                    Waves Wallet Address
+                  </label>
+                  <div className="space-y-3">
                     <input 
                       type="text"
                       value={manualWalletAddress}
@@ -2026,55 +2140,148 @@ export default function App() {
                     <button
                       onClick={() => connectWalletWithAddress(manualWalletAddress)}
                       disabled={wavesLoading || !manualWalletAddress.trim()}
-                      className="w-full bg-cyan-500 hover:bg-cyan-400 text-black py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-40 flex items-center justify-center space-x-2 shadow-lg shadow-cyan-500/10"
+                      className="w-full bg-cyan-500 hover:bg-cyan-400 text-black py-3.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-40 flex items-center justify-center space-x-2 shadow-lg shadow-cyan-500/10"
                     >
                       {wavesLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                       <span>Save & Link Wallet Address</span>
                     </button>
                   </div>
                 </div>
-
-                <div className="relative flex py-1 items-center">
-                  <div className="flex-grow border-t border-neutral-800"></div>
-                  <span className="flex-shrink mx-3 text-[10px] font-black uppercase tracking-widest text-neutral-500">Or</span>
-                  <div className="flex-grow border-t border-neutral-800"></div>
+              </motion.div>
+            </>
+          )}
+          {selectedAdminFile && (
+            <>
+              <motion.div 
+                initial={{ opacity: 0 }} 
+                animate={{ opacity: 1 }} 
+                exit={{ opacity: 0 }} 
+                onClick={() => setSelectedAdminFile(null)}
+                className="fixed inset-0 bg-black/85 backdrop-blur-md z-[130]"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }} 
+                animate={{ opacity: 1, scale: 1, y: 0 }} 
+                exit={{ opacity: 0, scale: 0.95, y: 20 }} 
+                className="fixed inset-0 m-auto w-full max-w-2xl h-[85vh] bg-neutral-900 border border-neutral-800 p-6 rounded-[2rem] shadow-2xl z-[140] flex flex-col space-y-4"
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
+                  <div className="flex items-center space-x-3">
+                    <div className="p-2.5 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded-xl">
+                      <FileJson className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-black uppercase text-white tracking-tight">{selectedAdminFile.label}</h3>
+                      <p className="text-[10px] text-neutral-400 uppercase font-bold tracking-wider mt-0.5">
+                        {(selectedAdminFile.addresses?.length || selectedAdminFile.addressCount || 0).toLocaleString()} Registered Wallets • Created {new Date(selectedAdminFile.createdAt).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button 
+                      onClick={() => downloadSharedFileCSV(selectedAdminFile)}
+                      className="flex items-center space-x-1.5 bg-cyan-500 hover:bg-cyan-400 text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all shadow-md"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download CSV</span>
+                    </button>
+                    <button 
+                      onClick={() => setSelectedAdminFile(null)}
+                      className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
                 </div>
 
-                {/* Option B: Install extension / external link */}
-                <div className="space-y-2">
-                  <span className="text-[10px] font-black text-neutral-400 uppercase tracking-widest block">
-                    Option 2: Browser Extension / Sign in
-                  </span>
-                  <div className="grid grid-cols-2 gap-2">
-                    <a 
-                      href="https://wx.network/" 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-center space-x-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-3 py-2.5 rounded-xl text-[10px] font-black uppercase transition-colors border border-neutral-700/80"
-                    >
-                      <span>WX.Network</span>
-                      <ExternalLink className="w-3.5 h-3.5 text-neutral-400" />
-                    </a>
-                    {!user ? (
-                      <button 
-                        onClick={() => {
-                          setIsWavesModalOpen(false);
-                          login();
-                        }}
-                        className="flex items-center justify-center space-x-2 bg-white text-black px-3 py-2.5 rounded-xl text-[10px] font-black uppercase hover:bg-neutral-200 transition-colors"
-                      >
-                        <LogIn className="w-3.5 h-3.5" />
-                        <span>Sign In</span>
-                      </button>
-                    ) : (
-                      <button 
-                        onClick={() => setIsWavesModalOpen(false)}
-                        className="flex items-center justify-center space-x-2 bg-neutral-800 text-neutral-300 hover:text-white px-3 py-2.5 rounded-xl text-[10px] font-black uppercase hover:bg-neutral-700 transition-colors"
-                      >
-                        <span>Close</span>
-                      </button>
-                    )}
-                  </div>
+                {/* Search in Batch */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input 
+                    type="text"
+                    value={adminSearchQuery}
+                    onChange={(e) => {
+                      setAdminSearchQuery(e.target.value);
+                      setAdminPage(1);
+                    }}
+                    placeholder="Search address or prefix..."
+                    className="w-full bg-black border border-neutral-800 rounded-xl pl-10 pr-4 py-2.5 text-xs font-mono text-white placeholder-neutral-600 focus:border-cyan-500 outline-none transition-all"
+                  />
+                </div>
+
+                {/* Address List View */}
+                <div className="flex-1 bg-black/60 border border-neutral-800 rounded-xl p-3 overflow-y-auto font-mono text-xs divide-y divide-neutral-900 scrollbar-thin">
+                  {(() => {
+                    const addrs = (selectedAdminFile.addresses && selectedAdminFile.addresses.length > 0)
+                      ? selectedAdminFile.addresses
+                      : [];
+                    const filtered = adminSearchQuery.trim()
+                      ? addrs.filter(a => a.toLowerCase().includes(adminSearchQuery.toLowerCase().trim()))
+                      : addrs;
+
+                    const pageSize = 50;
+                    const totalPages = Math.ceil(filtered.length / pageSize) || 1;
+                    const currentPage = Math.min(adminPage, totalPages);
+                    const paged = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+                    if (addrs.length === 0) {
+                      return (
+                        <div className="py-12 text-center text-neutral-500 font-sans text-xs">
+                          This older contribution batch recorded {selectedAdminFile.addressCount.toLocaleString()} count in stats. Newly contributed batches preserve full row-by-row address indexes.
+                        </div>
+                      );
+                    }
+
+                    if (filtered.length === 0) {
+                      return (
+                        <div className="py-12 text-center text-neutral-500 font-sans text-xs">
+                          No addresses match "{adminSearchQuery}"
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px] text-neutral-500 pb-2 px-2 uppercase font-black tracking-widest font-sans">
+                          <span>Showing {((currentPage - 1) * pageSize) + 1} - {Math.min(currentPage * pageSize, filtered.length)} of {filtered.length} Wallets</span>
+                          <div className="flex items-center space-x-1">
+                            <button
+                              disabled={currentPage <= 1}
+                              onClick={() => setAdminPage(p => Math.max(1, p - 1))}
+                              className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 rounded text-white"
+                            >
+                              Prev
+                            </button>
+                            <span className="px-1 text-cyan-400">{currentPage}/{totalPages}</span>
+                            <button
+                              disabled={currentPage >= totalPages}
+                              onClick={() => setAdminPage(p => Math.min(totalPages, p + 1))}
+                              className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 rounded text-white"
+                            >
+                              Next
+                            </button>
+                          </div>
+                        </div>
+
+                        {paged.map((addr, idx) => (
+                          <div key={addr + idx} className="py-1.5 px-2 flex items-center justify-between hover:bg-neutral-900 rounded group">
+                            <div className="flex items-center space-x-3 text-neutral-300">
+                              <span className="text-[10px] text-neutral-600 w-8">#{(currentPage - 1) * pageSize + idx + 1}</span>
+                              <span className="truncate">{addr}</span>
+                            </div>
+                            <button 
+                              onClick={() => navigator.clipboard.writeText(addr)}
+                              className="opacity-0 group-hover:opacity-100 p-1 hover:text-cyan-400 text-neutral-500 text-[10px] uppercase font-bold transition-opacity"
+                              title="Copy to clipboard"
+                            >
+                              <Clipboard className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               </motion.div>
             </>
@@ -2209,6 +2416,64 @@ function StatCard({ label, value, sub, icon, progress, pulse, action }: { label:
           <span>Add Funds</span>
         </button>
       )}
+    </div>
+  );
+}
+
+function BrandLogo({ className = 'w-8 h-8' }: { className?: string }) {
+  return (
+    <div className={`relative flex items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 via-cyan-500 to-emerald-400 p-[1.5px] shadow-[0_0_20px_rgba(6,182,212,0.45)] ${className}`}>
+      <div className="w-full h-full bg-neutral-950 rounded-[10px] flex items-center justify-center overflow-hidden relative">
+        {/* Ambient subtle glow background */}
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,rgba(6,182,212,0.25),transparent_70%)]" />
+        
+        {/* Custom Precision Vector Emblem: Intersecting cryptographic wave facets */}
+        <svg 
+          viewBox="0 0 36 36" 
+          fill="none" 
+          xmlns="http://www.w3.org/2000/svg"
+          className="w-[82%] h-[82%] relative z-10"
+        >
+          <defs>
+            <linearGradient id="brandGradPrimary" x1="4" y1="6" x2="32" y2="30" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#22d3ee" />
+              <stop offset="0.5" stopColor="#06b6d4" />
+              <stop offset="1" stopColor="#10b981" />
+            </linearGradient>
+            <linearGradient id="brandGradSecondary" x1="18" y1="4" x2="18" y2="32" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#ffffff" stopOpacity="0.9" />
+              <stop offset="1" stopColor="#06b6d4" stopOpacity="0.4" />
+            </linearGradient>
+          </defs>
+
+          {/* Outer faceted geometric circuit diamond */}
+          <path 
+            d="M18 4L31 18L18 32L5 18L18 4Z" 
+            stroke="url(#brandGradPrimary)" 
+            strokeWidth="1.8" 
+            strokeLinejoin="round"
+            className="opacity-70"
+          />
+
+          {/* Dynamic cryptographic Waves soundwave/extraction frequency bars */}
+          <path 
+            d="M11 20L14 13L18 23L22 13L25 20" 
+            stroke="url(#brandGradSecondary)" 
+            strokeWidth="2.4" 
+            strokeLinecap="round" 
+            strokeLinejoin="round" 
+          />
+
+          {/* Core quantum node pulse */}
+          <circle cx="18" cy="18" r="2.2" fill="#22d3ee" className="animate-pulse" />
+
+          {/* Corner anchor nodes */}
+          <circle cx="18" cy="4" r="1.5" fill="#22d3ee" />
+          <circle cx="31" cy="18" r="1.5" fill="#10b981" />
+          <circle cx="18" cy="32" r="1.5" fill="#10b981" />
+          <circle cx="5" cy="18" r="1.5" fill="#22d3ee" />
+        </svg>
+      </div>
     </div>
   );
 }
